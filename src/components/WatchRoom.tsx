@@ -17,34 +17,39 @@ interface ChatMessage {
   time: number;
 }
 
-const PLAYERJS_SCRIPT_SRC = 'https://recklessevadingdriver.github.io/Player/playerjs.js';
+const PLAYERJS_SCRIPT_SRCS = [
+  'https://recklessevadingdriver.github.io/Player/playerjs.js',
+  'https://recklessevadingdriver.github.io/player/playerjs.js',
+  'https://cdn.jsdelivr.net/gh/RecklessEvadingDriver/Player@main/playerjs.js',
+];
 
-function loadPlayerJSScript(): Promise<void> {
+function hasPlayerJS() {
+  return Boolean((window as any).Playerjs);
+}
+
+function loadScript(src: string): Promise<boolean> {
   return new Promise((resolve) => {
-    if ((window as any).Playerjs) {
-      resolve();
-      return;
-    }
-    const existing = document.querySelector(`script[src="${PLAYERJS_SCRIPT_SRC}"]`);
+    const existing = document.querySelector(`script[src="${src}"]`);
     if (existing) {
-      const check = setInterval(() => {
-        if ((window as any).Playerjs) {
-          clearInterval(check);
-          resolve();
-        }
-      }, 100);
+      resolve(true);
       return;
     }
     const script = document.createElement('script');
-    script.src = PLAYERJS_SCRIPT_SRC;
+    script.src = src;
     script.type = 'text/javascript';
-    script.onload = () => resolve();
-    script.onerror = () => {
-      console.error('Failed to load PlayerJS script');
-      resolve();
-    };
+    script.onload = () => resolve(true);
+    script.onerror = () => resolve(false);
     document.head.appendChild(script);
   });
+}
+
+async function loadPlayerJSScript(): Promise<boolean> {
+  if (hasPlayerJS()) return true;
+  for (const src of PLAYERJS_SCRIPT_SRCS) {
+    const loaded = await loadScript(src);
+    if (loaded && hasPlayerJS()) return true;
+  }
+  return hasPlayerJS();
 }
 
 export default function WatchRoom({ roomId }: { roomId: string }) {
@@ -52,6 +57,7 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
   const displayName = getDisplayName();
   const playerContainerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
+  const nativeVideoRef = useRef<HTMLVideoElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [room, setRoom] = useState<Room | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
@@ -66,6 +72,7 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
   const [copied, setCopied] = useState(false);
   const [videoProgress, setVideoProgress] = useState(0);
   const [videoDuration, setVideoDuration] = useState(0);
+  const [useNativeVideo, setUseNativeVideo] = useState(false);
   const syncLockRef = useRef(false);
   const channelRef = useRef<any>(null);
   const containerIdRef = useRef<string>('');
@@ -116,12 +123,18 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
   // Initialize PlayerJS when room data is available
   useEffect(() => {
     if (!room) return;
+    let cancelled = false;
 
     const initPlayer = async () => {
-      await loadPlayerJSScript();
+      const loaded = await loadPlayerJSScript();
 
-      if (!playerContainerRef.current) return;
+      if (cancelled || !playerContainerRef.current) return;
       if (playerRef.current) return;
+
+      if (!loaded) {
+        setUseNativeVideo(true);
+        return;
+      }
 
       const containerId = `playerjs-${room.id}`;
       containerIdRef.current = containerId;
@@ -164,7 +177,7 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
 
       const PlayerjsConstructor = (window as any).Playerjs;
       if (!PlayerjsConstructor) {
-        console.error('Playerjs constructor not found on window');
+        setUseNativeVideo(true);
         return;
       }
 
@@ -177,12 +190,14 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
         });
       } catch (err) {
         console.error('Failed to initialize PlayerJS:', err);
+        setUseNativeVideo(true);
       }
     };
 
     initPlayer();
 
     return () => {
+      cancelled = true;
       if (playerRef.current) {
         try {
           playerRef.current.api('destroy');
@@ -194,7 +209,7 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
         playerContainerRef.current.id = '';
       }
     };
-  }, [room?.id]);
+  }, [room?.id, room?.video_url]);
 
   // Real-time subscriptions
   useEffect(() => {
@@ -213,22 +228,36 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
         filter: `id=eq.${roomId}`,
       }, (payload: any) => {
         setRoom(payload.new);
-        if (playerRef.current && !syncLockRef.current) {
+        if (!syncLockRef.current && (playerRef.current || (useNativeVideo && nativeVideoRef.current))) {
           syncLockRef.current = true;
           const newTime = Number(payload.new.playback_position);
-          let currentTime = 0;
-          try { currentTime = playerRef.current.api('time') || 0; } catch {}
+          if (useNativeVideo && nativeVideoRef.current) {
+            const videoEl = nativeVideoRef.current;
+            const currentTime = videoEl.currentTime || 0;
+            if (Math.abs(newTime - currentTime) > 1.5) {
+              videoEl.currentTime = newTime;
+            }
+            const currentlyPlaying = !videoEl.paused;
+            if (payload.new.is_playing && !currentlyPlaying) {
+              videoEl.play().catch(() => undefined);
+            } else if (!payload.new.is_playing && currentlyPlaying) {
+              videoEl.pause();
+            }
+          } else if (playerRef.current) {
+            let currentTime = 0;
+            try { currentTime = playerRef.current.api('time') || 0; } catch {}
 
-          if (Math.abs(newTime - currentTime) > 1.5) {
-            try { playerRef.current.api('seek', newTime); } catch {}
-          }
-          let currentlyPlaying = false;
-          try { currentlyPlaying = playerRef.current.api('playing'); } catch {}
+            if (Math.abs(newTime - currentTime) > 1.5) {
+              try { playerRef.current.api('seek', newTime); } catch {}
+            }
+            let currentlyPlaying = false;
+            try { currentlyPlaying = playerRef.current.api('playing'); } catch {}
 
-          if (payload.new.is_playing && !currentlyPlaying) {
-            try { playerRef.current.api('play'); } catch {}
-          } else if (!payload.new.is_playing && currentlyPlaying) {
-            try { playerRef.current.api('pause'); } catch {}
+            if (payload.new.is_playing && !currentlyPlaying) {
+              try { playerRef.current.api('play'); } catch {}
+            } else if (!payload.new.is_playing && currentlyPlaying) {
+              try { playerRef.current.api('pause'); } catch {}
+            }
           }
           setTimeout(() => { syncLockRef.current = false; }, 500);
         }
@@ -271,7 +300,7 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
       channel.unsubscribe();
       webrtcCleanup();
     };
-  }, [roomId, userId]);
+  }, [roomId, userId, useNativeVideo]);
 
   // Auto-scroll chat
   useEffect(() => {
@@ -288,6 +317,17 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
   }, [isHost, room]);
 
   const handlePlayPause = () => {
+    if (useNativeVideo && nativeVideoRef.current) {
+      const videoEl = nativeVideoRef.current;
+      if (videoEl.paused) {
+        videoEl.play().catch(() => undefined);
+        syncPlayback(true, videoEl.currentTime);
+      } else {
+        videoEl.pause();
+        syncPlayback(false, videoEl.currentTime);
+      }
+      return;
+    }
     if (!playerRef.current) return;
     if (isPlaying) {
       try { playerRef.current.api('pause'); } catch {}
@@ -303,15 +343,26 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
   };
 
   const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!playerRef.current || !videoDuration) return;
+    if (!videoDuration) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const pos = (e.clientX - rect.left) / rect.width;
     const newTime = pos * videoDuration;
-    try { playerRef.current.api('seek', newTime); } catch {}
+    if (useNativeVideo && nativeVideoRef.current) {
+      nativeVideoRef.current.currentTime = newTime;
+    } else if (playerRef.current) {
+      try { playerRef.current.api('seek', newTime); } catch {}
+    } else {
+      return;
+    }
     syncPlayback(isPlaying, newTime);
   };
 
   const toggleMute = () => {
+    if (useNativeVideo && nativeVideoRef.current) {
+      nativeVideoRef.current.muted = !nativeVideoRef.current.muted;
+      setIsMuted(nativeVideoRef.current.muted);
+      return;
+    }
     if (!playerRef.current) return;
     if (isMuted) {
       try { playerRef.current.api('unmute'); } catch {}
@@ -322,6 +373,16 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
   };
 
   const toggleFullscreen = () => {
+    if (useNativeVideo && nativeVideoRef.current) {
+      if (!document.fullscreenElement) {
+        nativeVideoRef.current.requestFullscreen().catch(() => undefined);
+        setIsFullscreen(true);
+      } else {
+        document.exitFullscreen().catch(() => undefined);
+        setIsFullscreen(false);
+      }
+      return;
+    }
     if (!playerRef.current) return;
     if (!isFullscreen) {
       try { playerRef.current.api('fullscreen'); } catch {}
@@ -428,11 +489,28 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
         <div className="flex-1 flex flex-col min-w-0">
           {/* Video Player - PlayerJS container */}
           <div className="relative flex-1 bg-black flex items-center justify-center">
-            <div
-              ref={playerContainerRef}
-              className="w-full h-full"
-              style={{ minHeight: '400px' }}
-            />
+            {useNativeVideo ? (
+              <video
+                key={`${room.id}-${room.video_url}`}
+                ref={nativeVideoRef}
+                src={room.video_url}
+                playsInline
+                autoPlay={room.is_playing}
+                className="w-full h-full"
+                style={{ minHeight: '400px' }}
+                onTimeUpdate={(e) => setVideoProgress((e.currentTarget as HTMLVideoElement).currentTime)}
+                onLoadedMetadata={(e) => setVideoDuration((e.currentTarget as HTMLVideoElement).duration || 0)}
+                onPlay={() => setIsPlaying(true)}
+                onPause={() => setIsPlaying(false)}
+                onVolumeChange={(e) => setIsMuted((e.currentTarget as HTMLVideoElement).muted)}
+              />
+            ) : (
+              <div
+                ref={playerContainerRef}
+                className="w-full h-full"
+                style={{ minHeight: '400px' }}
+              />
+            )}
           </div>
 
           {/* Custom Controls Bar */}
