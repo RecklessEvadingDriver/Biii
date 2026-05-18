@@ -4,4 +4,4 @@
 
 ## Deployment
 
-This project deploys automatically to GitHub Pages from the `main` branch using the workflow at `/home/runner/work/Biii/Biii/.github/workflows/deploy.yml`.
+This project deploys automatically to GitHub Pages from the `main` branch using the workflow at `.github/workflows/deploy.yml`.
