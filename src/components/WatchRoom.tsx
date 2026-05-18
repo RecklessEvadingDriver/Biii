@@ -204,13 +204,12 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
         } catch {}
         playerRef.current = null;
       }
-      setUseNativeVideo(false);
       // Reset container id so it can be re-assigned on remount
       if (playerContainerRef.current) {
         playerContainerRef.current.id = '';
       }
     };
-  }, [room?.id]);
+  }, [room?.id, room?.video_url]);
 
   // Real-time subscriptions
   useEffect(() => {
@@ -492,6 +491,7 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
           <div className="relative flex-1 bg-black flex items-center justify-center">
             {useNativeVideo ? (
               <video
+                key={`${room.id}-${room.video_url}`}
                 ref={nativeVideoRef}
                 src={room.video_url}
                 playsInline
