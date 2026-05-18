@@ -128,18 +128,18 @@ export function useWebRTC(_roomId: string, userId: string) {
     };
 
     pc.onicecandidate = (event) => {
-      if (event.candidate && channelRef.current) {
-        channelRef.current.send({
-          type: 'broadcast',
-          event: 'webrtc-signal',
-          payload: {
-            type: 'ice-candidate',
-            candidate: event.candidate.toJSON(),
-            target: targetId,
-            from: userId,
-          },
-        });
-      }
+      const { candidate } = event;
+      if (!candidate || !channelRef.current) return;
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'webrtc-signal',
+        payload: {
+          type: 'ice-candidate',
+          candidate: candidate.toJSON(),
+          target: targetId,
+          from: userId,
+        },
+      });
     };
 
     const offer = await pc.createOffer();
@@ -184,18 +184,18 @@ export function useWebRTC(_roomId: string, userId: string) {
       };
 
       pc.onicecandidate = (event) => {
-        if (event.candidate && channelRef.current) {
-          channelRef.current.send({
-            type: 'broadcast',
-            event: 'webrtc-signal',
-            payload: {
-              type: 'ice-candidate',
-              candidate: event.candidate.toJSON(),
-              target: from,
-              from: userId,
-            },
-          });
-        }
+        const { candidate } = event;
+        if (!candidate || !channelRef.current) return;
+        channelRef.current.send({
+          type: 'broadcast',
+          event: 'webrtc-signal',
+          payload: {
+            type: 'ice-candidate',
+            candidate: candidate.toJSON(),
+            target: from,
+            from: userId,
+          },
+        });
       };
 
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
