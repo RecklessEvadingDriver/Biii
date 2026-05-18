@@ -6,6 +6,11 @@ import {
   Tv, Link, Users, ArrowRight, Sparkles, Globe, MessageCircle
 } from 'lucide-react';
 
+function getErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof Error) return err.message;
+  return fallback;
+}
+
 export default function HomePage() {
   const [videoUrl, setVideoUrl] = useState('');
   const [roomName, setRoomName] = useState('');
@@ -51,8 +56,8 @@ export default function HomePage() {
       if (participantError) throw participantError;
 
       window.location.hash = `#/room/${data.id}`;
-    } catch (err: any) {
-      setError(err.message || 'Failed to create room');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Failed to create room'));
     } finally {
       setCreating(false);
     }
@@ -100,8 +105,8 @@ export default function HomePage() {
       }
 
       window.location.hash = `#/room/${room.id}`;
-    } catch (err: any) {
-      setError(err.message || 'Failed to join room');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Failed to join room'));
     } finally {
       setJoining(false);
     }
