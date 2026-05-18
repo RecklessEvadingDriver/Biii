@@ -4,6 +4,8 @@ import WatchRoom from './components/WatchRoom';
 import { isSupabaseConfigured, supabaseConfigError } from './lib/supabase';
 
 function App() {
+  const { roomId } = useHashRouter();
+
   if (!isSupabaseConfigured) {
     return (
       <div className="min-h-screen bg-gray-950 text-white flex items-center justify-center p-6">
@@ -14,8 +16,6 @@ function App() {
       </div>
     );
   }
-
-  const { roomId } = useHashRouter();
 
   if (roomId) {
     return <WatchRoom roomId={roomId} />;
