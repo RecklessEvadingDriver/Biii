@@ -21,6 +21,15 @@ interface WebRTCSignalChannel {
   }) => void;
 }
 
+function serializeIceCandidate(candidate: RTCIceCandidate): RTCIceCandidateInit {
+  return {
+    candidate: candidate.candidate,
+    sdpMid: candidate.sdpMid ?? undefined,
+    sdpMLineIndex: candidate.sdpMLineIndex ?? undefined,
+    usernameFragment: candidate.usernameFragment ?? undefined,
+  };
+}
+
 export function useWebRTC(_roomId: string, userId: string) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [peerStreams, setPeerStreams] = useState<Map<string, MediaStream>>(new Map());
@@ -135,7 +144,7 @@ export function useWebRTC(_roomId: string, userId: string) {
         event: 'webrtc-signal',
         payload: {
           type: 'ice-candidate',
-          candidate: candidate.toJSON(),
+          candidate: serializeIceCandidate(candidate),
           target: targetId,
           from: userId,
         },
@@ -191,7 +200,7 @@ export function useWebRTC(_roomId: string, userId: string) {
           event: 'webrtc-signal',
           payload: {
             type: 'ice-candidate',
-            candidate: candidate.toJSON(),
+            candidate: serializeIceCandidate(candidate),
             target: from,
             from: userId,
           },
