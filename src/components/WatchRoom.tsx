@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import type { RealtimeChannel, RealtimePostgresUpdatePayload } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
-import { useWebRTC } from '../hooks/useWebRTC';
+import { useWebRTC, type WebRTCSignalMessage } from '../hooks/useWebRTC';
 import { formatTime, copyToClipboard } from '../lib/utils';
 import { getOrCreateUserId, getDisplayName } from '../lib/session';
 import type { Room, Participant } from '../lib/types';
@@ -17,6 +18,14 @@ interface ChatMessage {
   time: number;
 }
 
+interface UserJoinedPayload {
+  userId: string;
+}
+
+interface BroadcastPayload<T> {
+  payload: T;
+}
+
 const PLAYERJS_SCRIPT_SRCS = [
   'https://recklessevadingdriver.github.io/Player/playerjs.js',
   'https://recklessevadingdriver.github.io/player/playerjs.js',
@@ -24,7 +33,7 @@ const PLAYERJS_SCRIPT_SRCS = [
 ];
 
 function hasPlayerJS() {
-  return Boolean((window as any).Playerjs);
+  return Boolean(window.Playerjs);
 }
 
 function loadScript(src: string): Promise<boolean> {
@@ -56,7 +65,7 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
   const userId = getOrCreateUserId();
   const displayName = getDisplayName();
   const playerContainerRef = useRef<HTMLDivElement>(null);
-  const playerRef = useRef<any>(null);
+  const playerRef = useRef<Playerjs | null>(null);
   const nativeVideoRef = useRef<HTMLVideoElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [room, setRoom] = useState<Room | null>(null);
@@ -74,7 +83,7 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
   const [videoDuration, setVideoDuration] = useState(0);
   const [useNativeVideo, setUseNativeVideo] = useState(false);
   const syncLockRef = useRef(false);
-  const channelRef = useRef<any>(null);
+  const channelRef = useRef<RealtimeChannel | null>(null);
   const containerIdRef = useRef<string>('');
 
   const {
@@ -143,7 +152,7 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
       const startFrom = Number(room.playback_position) || 0;
 
       // Global event handler for PlayerJS
-      (window as any).PlayerjsEvents = (event: string, id: string, data: any) => {
+      window.PlayerjsEvents = (event: string, id: string, data: unknown) => {
         if (id !== containerIdRef.current) return;
 
         if (event === 'time') {
@@ -175,7 +184,7 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
         }
       };
 
-      const PlayerjsConstructor = (window as any).Playerjs;
+      const PlayerjsConstructor = window.Playerjs;
       if (!PlayerjsConstructor) {
         setUseNativeVideo(true);
         return;
@@ -201,7 +210,9 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
       if (playerRef.current) {
         try {
           playerRef.current.api('destroy');
-        } catch {}
+        } catch {
+          // no-op
+        }
         playerRef.current = null;
       }
       // Reset container id so it can be re-assigned on remount
@@ -226,11 +237,12 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
         schema: 'public',
         table: 'rooms',
         filter: `id=eq.${roomId}`,
-      }, (payload: any) => {
-        setRoom(payload.new);
+      }, (payload: RealtimePostgresUpdatePayload<Record<string, unknown>>) => {
+        const updatedRoom = payload.new as unknown as Room;
+        setRoom(updatedRoom);
         if (!syncLockRef.current && (playerRef.current || (useNativeVideo && nativeVideoRef.current))) {
           syncLockRef.current = true;
-          const newTime = Number(payload.new.playback_position);
+          const newTime = Number(updatedRoom.playback_position);
           if (useNativeVideo && nativeVideoRef.current) {
             const videoEl = nativeVideoRef.current;
             const currentTime = videoEl.currentTime || 0;
@@ -238,25 +250,35 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
               videoEl.currentTime = newTime;
             }
             const currentlyPlaying = !videoEl.paused;
-            if (payload.new.is_playing && !currentlyPlaying) {
+            if (updatedRoom.is_playing && !currentlyPlaying) {
               videoEl.play().catch(() => undefined);
-            } else if (!payload.new.is_playing && currentlyPlaying) {
+            } else if (!updatedRoom.is_playing && currentlyPlaying) {
               videoEl.pause();
             }
           } else if (playerRef.current) {
             let currentTime = 0;
-            try { currentTime = playerRef.current.api('time') || 0; } catch {}
+            try { currentTime = Number(playerRef.current.api('time') ?? 0); } catch {
+              // no-op
+            }
 
             if (Math.abs(newTime - currentTime) > 1.5) {
-              try { playerRef.current.api('seek', newTime); } catch {}
+              try { playerRef.current.api('seek', newTime); } catch {
+                // no-op
+              }
             }
             let currentlyPlaying = false;
-            try { currentlyPlaying = playerRef.current.api('playing'); } catch {}
+            try { currentlyPlaying = Boolean(playerRef.current.api('playing')); } catch {
+              // no-op
+            }
 
-            if (payload.new.is_playing && !currentlyPlaying) {
-              try { playerRef.current.api('play'); } catch {}
-            } else if (!payload.new.is_playing && currentlyPlaying) {
-              try { playerRef.current.api('pause'); } catch {}
+            if (updatedRoom.is_playing && !currentlyPlaying) {
+              try { playerRef.current.api('play'); } catch {
+                // no-op
+              }
+            } else if (!updatedRoom.is_playing && currentlyPlaying) {
+              try { playerRef.current.api('pause'); } catch {
+                // no-op
+              }
             }
           }
           setTimeout(() => { syncLockRef.current = false; }, 500);
@@ -275,13 +297,13 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
           .is('left_at', null);
         setParticipants(data || []);
       })
-      .on('broadcast', { event: 'webrtc-signal' }, (payload: any) => {
+      .on('broadcast', { event: 'webrtc-signal' }, (payload: BroadcastPayload<WebRTCSignalMessage>) => {
         handleSignaling(payload.payload);
       })
-      .on('broadcast', { event: 'chat' }, (payload: any) => {
+      .on('broadcast', { event: 'chat' }, (payload: BroadcastPayload<ChatMessage>) => {
         setChatMessages((prev) => [...prev, payload.payload]);
       })
-      .on('broadcast', { event: 'user-joined' }, (payload: any) => {
+      .on('broadcast', { event: 'user-joined' }, (payload: BroadcastPayload<UserJoinedPayload>) => {
         if (payload.payload.userId !== userId) {
           createOffer(payload.payload.userId);
         }
@@ -311,7 +333,10 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
 
   const syncPlayback = useCallback(async (playing: boolean, position?: number) => {
     if (!isHost || !room) return;
-    const updates: any = { is_playing: playing, last_synced_at: new Date().toISOString() };
+    const updates: { is_playing: boolean; last_synced_at: string; playback_position?: number } = {
+      is_playing: playing,
+      last_synced_at: new Date().toISOString(),
+    };
     if (position !== undefined) updates.playback_position = position;
     await supabase.from('rooms').update(updates).eq('id', room.id);
   }, [isHost, room]);
@@ -330,14 +355,22 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
     }
     if (!playerRef.current) return;
     if (isPlaying) {
-      try { playerRef.current.api('pause'); } catch {}
+      try { playerRef.current.api('pause'); } catch {
+        // no-op
+      }
       let t = 0;
-      try { t = playerRef.current.api('time'); } catch {}
+      try { t = Number(playerRef.current.api('time') ?? 0); } catch {
+        // no-op
+      }
       syncPlayback(false, t);
     } else {
-      try { playerRef.current.api('play'); } catch {}
+      try { playerRef.current.api('play'); } catch {
+        // no-op
+      }
       let t = 0;
-      try { t = playerRef.current.api('time'); } catch {}
+      try { t = Number(playerRef.current.api('time') ?? 0); } catch {
+        // no-op
+      }
       syncPlayback(true, t);
     }
   };
@@ -350,7 +383,9 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
     if (useNativeVideo && nativeVideoRef.current) {
       nativeVideoRef.current.currentTime = newTime;
     } else if (playerRef.current) {
-      try { playerRef.current.api('seek', newTime); } catch {}
+      try { playerRef.current.api('seek', newTime); } catch {
+        // no-op
+      }
     } else {
       return;
     }
@@ -365,9 +400,13 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
     }
     if (!playerRef.current) return;
     if (isMuted) {
-      try { playerRef.current.api('unmute'); } catch {}
+      try { playerRef.current.api('unmute'); } catch {
+        // no-op
+      }
     } else {
-      try { playerRef.current.api('mute'); } catch {}
+      try { playerRef.current.api('mute'); } catch {
+        // no-op
+      }
     }
     setIsMuted(!isMuted);
   };
@@ -385,9 +424,13 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
     }
     if (!playerRef.current) return;
     if (!isFullscreen) {
-      try { playerRef.current.api('fullscreen'); } catch {}
+      try { playerRef.current.api('fullscreen'); } catch {
+        // no-op
+      }
     } else {
-      try { playerRef.current.api('exitfullscreen'); } catch {}
+      try { playerRef.current.api('exitfullscreen'); } catch {
+        // no-op
+      }
     }
   };
 
@@ -423,7 +466,9 @@ export default function WatchRoom({ roomId }: { roomId: string }) {
       .eq('room_id', roomId)
       .eq('user_id', userId);
     if (playerRef.current) {
-      try { playerRef.current.api('destroy'); } catch {}
+      try { playerRef.current.api('destroy'); } catch {
+        // no-op
+      }
       playerRef.current = null;
     }
     webrtcCleanup();

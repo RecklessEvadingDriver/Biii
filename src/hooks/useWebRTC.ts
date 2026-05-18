@@ -4,12 +4,29 @@ const ICE_SERVERS: RTCConfiguration = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 };
 
+export interface WebRTCSignalMessage {
+  type: 'offer' | 'answer' | 'ice-candidate';
+  from: string;
+  target: string;
+  offer?: RTCSessionDescriptionInit;
+  answer?: RTCSessionDescriptionInit;
+  candidate?: RTCIceCandidateInit;
+}
+
+interface WebRTCSignalChannel {
+  send: (message: {
+    type: 'broadcast';
+    event: 'webrtc-signal';
+    payload: WebRTCSignalMessage;
+  }) => void;
+}
+
 export function useWebRTC(_roomId: string, userId: string) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [peerStreams, setPeerStreams] = useState<Map<string, MediaStream>>(new Map());
   const [micOn, setMicOn] = useState(false);
   const [camOn, setCamOn] = useState(false);
-  const channelRef = useRef<any>(null);
+  const channelRef = useRef<WebRTCSignalChannel | null>(null);
   const connectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
 
@@ -117,7 +134,7 @@ export function useWebRTC(_roomId: string, userId: string) {
           event: 'webrtc-signal',
           payload: {
             type: 'ice-candidate',
-            candidate: event.candidate,
+            candidate: event.candidate.toJSON(),
             target: targetId,
             from: userId,
           },
@@ -142,11 +159,12 @@ export function useWebRTC(_roomId: string, userId: string) {
     }
   }, [userId]);
 
-  const handleSignaling = useCallback(async (message: any) => {
+  const handleSignaling = useCallback(async (message: WebRTCSignalMessage) => {
     const { type, from, offer, answer, candidate } = message;
     if (from === userId) return;
 
     if (type === 'offer') {
+      if (!offer) return;
       const pc = new RTCPeerConnection(ICE_SERVERS);
       connectionsRef.current.set(from, pc);
 
@@ -172,7 +190,7 @@ export function useWebRTC(_roomId: string, userId: string) {
             event: 'webrtc-signal',
             payload: {
               type: 'ice-candidate',
-              candidate: event.candidate,
+              candidate: event.candidate.toJSON(),
               target: from,
               from: userId,
             },
@@ -199,6 +217,7 @@ export function useWebRTC(_roomId: string, userId: string) {
     }
 
     if (type === 'answer') {
+      if (!answer) return;
       const pc = connectionsRef.current.get(from);
       if (pc) {
         await pc.setRemoteDescription(new RTCSessionDescription(answer));
@@ -206,6 +225,7 @@ export function useWebRTC(_roomId: string, userId: string) {
     }
 
     if (type === 'ice-candidate') {
+      if (!candidate) return;
       const pc = connectionsRef.current.get(from);
       if (pc) {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
@@ -213,7 +233,7 @@ export function useWebRTC(_roomId: string, userId: string) {
     }
   }, [userId]);
 
-  const setChannel = useCallback((channel: any) => {
+  const setChannel = useCallback((channel: WebRTCSignalChannel) => {
     channelRef.current = channel;
   }, []);
 
